@@ -6,6 +6,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <glm/gtc/quaternion.hpp>
+
 #include <learnopengl/filesystem.h>
 #include <learnopengl/shader.h>
 #include <learnopengl/camera.h>
@@ -20,6 +22,7 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <math.h>
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
@@ -28,24 +31,21 @@ void processInput(GLFWwindow *window);
 unsigned int loadTexturef(const char *path);
 void renderSphere();
 void renderCube();
-void renderQuad();
+void renderQuad(float width);
+void updateCamera(); // Prototip eklendi
 
 // settings
-const unsigned int SCR_WIDTH = 1280;
-const unsigned int SCR_HEIGHT = 720;
+const unsigned int SCR_WIDTH = 1920;
+const unsigned int SCR_HEIGHT = 1020;
 
 // camera
 
-glm::vec3 airplanePosition(0.0f, 0.0f, 5.0f); // Start higher in the air
+glm::vec3 airplanePosition(-102.815, 1, -59.034); // Start higher in the air
 glm::vec3 cameraOffset(0.0f, 8.0f, 0.0f); // Camera is slightly above and behind the airplane
-Camera camera(cameraOffset);
+Camera camera(airplanePosition + cameraOffset);
 
-float lastX = 800.0f / 2.0;
-float lastY = 600.0 / 2.0;
-bool firstMouse = true;
-
-    float camspeed;
-
+bool isPlaneTouchGround;
+bool pressingS;
 // timing
 float deltaTime = 0.0f;	
 float lastFrame = 0.0f;
@@ -54,10 +54,26 @@ float lastFrame = 0.0f;
 float pitch = 0.0f; // x-axis rotation
 float yaw = 0.0f;   // y-axis rotation
 float roll = 0.0f;  // z-axis rotation
-float speed = 10.0f;
+float speed = 1.0f;
+
+float groundscale = 0.3f;
+float airplanescale = 0.15f;
+
+bool cobra = false;
+
+float lastPitch = 0.0f;
+float lastPitchUpdateTime = 0.0f;
+float cobraEndTime = 0.0f;
+float pitchRate;
+float cobraStartTime = 0.0f;
+
+
 
 int main()
 {
+
+    #pragma region Baslangis Islemleri
+
     // glfw: initialize and configure
     // ------------------------------
     glfwInit();
@@ -82,6 +98,8 @@ int main()
     }
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetCursorPosCallback(window, mouse_callback);
+glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED); // Mouse imlecini gizle ve kontrolü al.
+
     glfwSetScrollCallback(window, scroll_callback);
 
     // tell GLFW to capture our mouse
@@ -113,7 +131,11 @@ int main()
     Shader backgroundShader("2.2.2.background.vs", "2.2.2.background.fs");
 
     
-    Model airplaneModel(FileSystem::getPath("resources/objects/tayyare/tayyare.dae"));
+    Shader ourShader("vertex_shader.glsl", "fragment_shader.glsl");
+
+    
+    Model airplaneModel(FileSystem::getPath("resources/objects/kaan/kaan.dae"));
+    Model groundModel(FileSystem::getPath("resources/objects/ettayyariyyetul_gemiyye/ettayyariyyetul_gemiyye.dae"));
 
     pbrShader.use();
     pbrShader.setInt("irradianceMap", 0);
@@ -132,7 +154,7 @@ int main()
     // --------------------------
 
     // gold
-    unsigned int airplaneAlbedoMap = loadTexturef(FileSystem::getPath("resources/objects/tayyare/tayyare.png").c_str());
+    unsigned int airplaneAlbedoMap = loadTexturef(FileSystem::getPath("resources/objects/kaan/kaan.png").c_str());
     unsigned int airplaneNormalMap = loadTexturef(FileSystem::getPath("resources/textures/pbr/gold/normal.png").c_str());
     unsigned int airplaneMetalicMap = loadTexturef(FileSystem::getPath("resources/textures/pbr/gold/metallic.png").c_str());
     unsigned int airplaneRoughnessMap = loadTexturef(FileSystem::getPath("resources/textures/pbr/gold/roughness.png").c_str());
@@ -353,7 +375,7 @@ int main()
     glViewport(0, 0, 512, 512);
     brdfShader.use();
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    renderQuad();
+    renderQuad(1.0f);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -371,6 +393,8 @@ int main()
     glfwGetFramebufferSize(window, &scrWidth, &scrHeight);
     glViewport(0, 0, scrWidth, scrHeight);
 
+    #pragma endregion
+   
     // render loop
     // -----------
     while (!glfwWindowShouldClose(window))
@@ -381,10 +405,13 @@ int main()
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        float currentTime = static_cast<float>(glfwGetTime()); // Mevcut zaman
+        float pitchChange = pitch - lastPitch; // Pitch değişimi hesapla
+        float timeSinceLastUpdate = currentTime - lastPitchUpdateTime; // Son güncellemeden geçen süre
 
-        // input
+
+         std::this_thread::sleep_for(std::chrono::milliseconds(8)); // Removed to improve airplane movement smoothness
+
         // -----
         processInput(window);
 
@@ -396,6 +423,28 @@ int main()
 
         // render scene, supplying the convoluted irradiance map to the final shader.
         // ------------------------------------------------------------------------------------------
+
+        ourShader.use();
+        // Ground model
+
+        glm::mat4 groundModelMatrix = glm::mat4(1.0f);
+        groundModelMatrix = glm::scale(groundModelMatrix, glm::vec3(groundscale, groundscale, groundscale));
+                
+        groundModelMatrix = glm::translate(groundModelMatrix, glm::vec3(0.0f, 0.0f, 0.0f)); // Pozisyonu uygula.
+        
+        groundModelMatrix = glm::rotate(groundModelMatrix, glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f)); // Yaw
+        groundModelMatrix = glm::rotate(groundModelMatrix, glm::radians(360.0f), glm::vec3(1.0f, 0.0f, 0.0f)); // Pitch
+        groundModelMatrix = glm::rotate(groundModelMatrix, glm::radians(180.0f), glm::vec3(0.0f, 0.0f, 1.0f)); // Roll
+
+        glm::mat4 viewxz = camera.GetViewMatrix();
+        glm::mat4 projectionxz = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 1000.0f);
+        ourShader.setMat4("model", groundModelMatrix);
+        ourShader.setMat4("view", viewxz);
+        ourShader.setMat4("projection", projectionxz);
+        groundModel.Draw(ourShader);
+
+        
+
         pbrShader.use();
         glm::mat4 model = glm::mat4(1.0f);
         glm::mat4 view = camera.GetViewMatrix();
@@ -411,7 +460,7 @@ int main()
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, brdfLUTTexture);
 
-                glActiveTexture(GL_TEXTURE3);
+        glActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_2D, airplaneAlbedoMap);
         glActiveTexture(GL_TEXTURE4);
         glBindTexture(GL_TEXTURE_2D, airplaneNormalMap);
@@ -421,30 +470,115 @@ int main()
         glBindTexture(GL_TEXTURE_2D, airplaneRoughnessMap);
         glActiveTexture(GL_TEXTURE7);
         glBindTexture(GL_TEXTURE_2D, airplaneAOMap);
-
         
         pbrShader.use();
-        glm::mat4 modelx = glm::mat4(1.0f);
-        glm::mat4 viewx = camera.GetViewMatrix();
-        pbrShader.setMat4("view", viewx);
-        pbrShader.setVec3("camPos", camera.Position);
 
-        modelx = glm::mat4(1.0f);
+        if (airplanePosition.y <= 1.0f) {
+            airplanePosition.y = 1.0f;
+            isPlaneTouchGround = true;
+        } else {
+            isPlaneTouchGround = false;
+        }
+
+        if ((airplanePosition.y < 1.5f && airplanePosition.y > 1.0f) && pressingS == false) {
+            roll = 0.0f;
+            pitch = 0.0f;
+        }
+        // Update camera position to follow the airplane
+        float baseDistance = 10.0f; float baseHeight = 3.0f; // cameraOffset.x ve cameraOffset.y'yi orbit açılar olarak kullanıyoruz.
+        float angleX = glm::radians(cameraOffset.x);
+        float angleY = glm::radians(cameraOffset.y);
+        float x = baseDistance * sin(angleX) * cos(angleY);
+        float y = baseDistance * sin(angleY) + baseHeight;
+        float z = baseDistance * cos(angleX) * cos(angleY);
+        camera.Position = airplanePosition + glm::vec3(x, y, z);
+        camera.Front = glm::normalize(airplanePosition - camera.Position);
+        camera.Up = glm::vec3(0,1,0);
+
+
+        glm::mat4 modelx = glm::mat4(1.0f);
+
+        // Uçağın pozisyonunu uygula
+        modelx = glm::translate(modelx, airplanePosition);
+
+
+        // Zaman farkı 0'dan büyükse, saniyelik pitch değişimini hesapla
+        pitchRate = (timeSinceLastUpdate > 0) ? (pitch - lastPitch) / timeSinceLastUpdate : 0.0f;
+
+
+        std::cout << "Pitch değişim hızı: " << pitchRate << " derece/saniye" << std::endl;
+
+        // Pitch değerlerini güncelle
+        lastPitch = pitch;
+        lastPitchUpdateTime = currentTime;
+
+
+        // Pitch değerlerini güncelle
+        lastPitch = pitch;
+        lastPitchUpdateTime = currentTime;
+
+        // Quaternion dönüşümleri ayrı ayrı uygula
+        glm::quat yawQuat = glm::angleAxis(glm::radians(yaw), glm::vec3(0, 1, 0));  // Yaw (yön)
+        glm::quat pitchQuat = glm::angleAxis(glm::radians(pitch), glm::vec3(1, 0, 0)); // Pitch (burun yukarı/aşağı)
+        glm::quat rollQuat = glm::angleAxis(glm::radians(roll), glm::vec3(0, 0, 1)); // Roll (yan yatma)
+
+
+        glm::quat cobraPitchQuat = glm::angleAxis(glm::radians(10.0f), glm::vec3(1, 0, 0)); // Cobra manevrası için pitch
+
+
+        glm::quat finalRotation = yawQuat * pitchQuat * rollQuat;
+        glm::quat cobrafinalRotation = yawQuat * cobraPitchQuat * rollQuat;
+        
 
         
-        modelx = glm::translate(modelx, airplanePosition); // Pozisyonu uygula
+        // Quaternion'ü model matrisine uygula
+        modelx *= glm::mat4_cast(finalRotation);
 
-        modelx = glm::rotate(modelx, glm::radians(pitch + 270.0f), glm::vec3(1.0f, 0.0f, 0.0f)); // Pitch
-        modelx = glm::rotate(modelx, glm::radians(yaw + 90.0f), glm::vec3(0.0f, 1.0f, 0.0f)); // Yaw
-        modelx = glm::rotate(modelx, glm::radians(roll + 180.0f), glm::vec3(0.0f, 0.0f, 1.0f)); // Roll
+     
+        cobrafinalRotation = glm::normalize(cobrafinalRotation); // Bozulmaları önlemek için normalize et
+
+        finalRotation = glm::normalize(finalRotation); // Bozulmaları önlemek için normalize et
+
+        
+        glm::vec3 forward = ((cobra) ? cobrafinalRotation : finalRotation) * glm::vec3(0.0f, 0.0f, -1.0f);
 
 
+        airplanePosition += forward * (speed * deltaTime);
+
+        
+        // Ölçekleme en sonda uygulanmalı
+        modelx = glm::scale(modelx, glm::vec3(airplanescale, airplanescale, airplanescale));
+
+        // Shader'a model matrisini gönder
         pbrShader.setMat4("model", modelx);
         pbrShader.setMat3("normalMatrix", glm::transpose(glm::inverse(glm::mat3(modelx))));
 
+        // Modeli çiz
         airplaneModel.Draw(pbrShader);
 
 
+
+
+
+
+        glm::mat4 modely = glm::mat4(1.0f);
+        glm::mat4 viewy = camera.GetViewMatrix();
+        pbrShader.setMat4("view", viewy);
+        pbrShader.setVec3("camPos", camera.Position);
+
+        modely = glm::mat4(1.0f);
+        modely = glm::translate(modely, glm::vec3(-5.0, 0.0, 0.0));
+
+        modely = glm::rotate(modely, glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f)); //Pitch
+        modely = glm::rotate(modely, glm::radians(0.0f), glm::vec3(0.0f, 1.0f, 0.0f)); // Yaw
+        modely = glm::rotate(modely, glm::radians(0.0f), glm::vec3(0.0f, 0.0f, 1.0f)); // Roll
+
+        
+        modely = glm::scale(modely, glm::vec3(30.0f, 30.0f, 30.0f));
+
+        pbrShader.setMat4("model", modely);
+        pbrShader.setMat3("normalMatrix", glm::transpose(glm::inverse(glm::mat3(modely))));
+        renderQuad(100.0f);   
 
         // render light source (simply re-render sphere at light positions)
         // this looks a bit off as we use the same shader, but it'll make their positions obvious and 
@@ -491,36 +625,178 @@ int main()
     return 0;
 }
 
-// process all input: query GLFW whether relevant keys are pressed/released this frame and react accordingly
-// ---------------------------------------------------------------------------------------------------------
-void processInput(GLFWwindow *window)
+void processInput(GLFWwindow* window)
 {
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        camera.ProcessKeyboard(FORWARD, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        camera.ProcessKeyboard(BACKWARD, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        camera.ProcessKeyboard(LEFT, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        camera.ProcessKeyboard(RIGHT, deltaTime);
+    float movementSpeed = speed * deltaTime;
+    float rotationSpeed = 50.0f * deltaTime;
+    (cobra) ? movementSpeed *= 0.05f : movementSpeed;
+    float cameraMoveSpeed = 50.0f * deltaTime; // Kamera hareket hızı
+
+    // Hızlandırma ve yavaşlatma
+    if (glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS) // '+' tuşu
+        speed += 10.0f * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS)
+        speed = glm::max(speed - 10.0f * deltaTime, 0.0f);
+
+    // Uçağı durdurma
+    if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) {
+        speed = 0.0f;
+    }
+
+    float zroll = fmod(roll, 360.0f);
+    float zpitch = fmod(pitch + 180.0f, 360.0f) - 180.0f;
+    float zyaw = fmod(yaw, 360.0f);
+
+
+    float pitchcalc = (rotationSpeed * (1.0f - (fabs(zroll) / 90.0f)));
+    float yawcalc = (rotationSpeed * ((zroll) / 90.0f));
+
+    int wscalc;
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+        wscalc = 1;//w
+        pressingS = false;
+    }
+    else if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+        wscalc = -1;//s
+        pressingS = true;
+    }
+    else {
+        wscalc = 0;//none
+        pressingS = false;
+    }
+
+    // Uçağın yönlendirilmesi
+    if (wscalc == 1) {
+        if (zroll == 0.0f) {
+            zpitch -= rotationSpeed;
+        } else if (zroll < 90.0f || zroll > 0.0f) {
+            zpitch -= pitchcalc;
+            zyaw -= yawcalc;
+
+
+        } else if (zroll > -90.0f || zroll < 0.0f) {
+            zpitch -= pitchcalc;
+            zyaw -= yawcalc;
+
+
+        } else if (zroll < 180.0f || zroll > 90.0f) {
+            zpitch -= pitchcalc;
+            zyaw -= yawcalc;
+
+
+        } else if (zroll > -180.0f || zroll < -90.0f) {
+            zpitch -= pitchcalc;
+            zyaw -= yawcalc;
+        }} else if (wscalc == -1) {
+        if (zroll == 0.0f) {
+            zpitch += rotationSpeed;
+        } else if (zroll < 90.0f || zroll > 0.0f) {
+            zpitch += pitchcalc;
+            zyaw += yawcalc;
+
+        } else if (zroll > -90.0f || zroll < 0.0f) {
+            zpitch += pitchcalc;
+            zyaw += yawcalc;
+        }
+        else if (zroll < 180.0f || zroll > 90.0f) {
+            zpitch += pitchcalc;
+            zyaw += yawcalc;
+
+
+        } else if (zroll > -180.0f || zroll < -90.0f) {
+            zpitch += pitchcalc;
+            zyaw += yawcalc;
+        }
+
+    }
     
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
-        yaw += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
-        yaw -= 1.0f;
+    zpitch = std::clamp(zpitch, -179.0f, 179.0f);
 
-    if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS)
-        pitch += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS)
-        pitch -= 1.0f;
+    pitch = zpitch;
+    yaw = zyaw;
 
-    if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS)
-        roll += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS)
-        roll -= 1.0f;
+    roll = zroll;
+
+    if ((((pitch > 89.0f && pitch < 129.0f) && pitchRate >=40.0f) || glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS) && cobra == false) {
+        cobra = true;
+        cobraStartTime = static_cast<float>(glfwGetTime());
+    }
+    else if ((pitch < 89.0f && pitch > 10.0f && cobra == true) || (pitch > 130.0f && cobra == true)) {
+        cobra = false;
+    }
+
+    if (cobra && (glfwGetTime() - cobraStartTime >= 3.0f)) {
+        cobra = false;
+        std::cout << glfwGetTime() - cobraStartTime << std::endl;
+    }
+    
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+        if(isPlaneTouchGround) {
+            yaw -= (rotationSpeed);
+        } else {
+            roll -= (rotationSpeed * 1.5f);
+        }
+    }
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+        if(isPlaneTouchGround) {
+            yaw += (rotationSpeed);
+        } else {
+            roll += (rotationSpeed * 1.5f);
+        }
+    }
+
+
+    // Pozisyon güncelle
+        glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), glm::radians(yaw), glm::vec3(0.0f, 1.0f, 0.0f));
+        rotationMatrix = glm::rotate(rotationMatrix, glm::radians(pitch), glm::vec3(1.0f, 0.0f, 0.0f));
+        rotationMatrix = glm::rotate(rotationMatrix, glm::radians(roll), glm::vec3(0.0f, 0.0f, 1.0f));
+        if (speed > 0.0f) {
+            airplanePosition.y -= (9.8f * deltaTime * 0.5f); // Yerçekimi etkisi
+        }
+        glm::vec3 forward = glm::vec3(rotationMatrix * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)); 
+        airplanePosition += forward * movementSpeed;
+
+
+    // Kamera offsetini uçak konumundan bağımsız değiştir
+    glm::vec3 newOffset = cameraOffset;
+
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
+        newOffset.y += cameraMoveSpeed;
+    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
+        newOffset.y -= cameraMoveSpeed;
+    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
+        newOffset.x -= cameraMoveSpeed;
+    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
+        newOffset.x += cameraMoveSpeed;
+    
+
+    // Değişiklikleri uygula
+    cameraOffset = newOffset;
+}
+
+
+
+void updateCamera()
+{
+    float cameraDistance = 10.0f;  // Kamera uçağın ne kadar gerisinde olacak
+    float cameraHeight = 3.0f;     // Kamera yüksekliği
+
+    // **Kameranın uçağın arkasına otomatik geçmesi için matris hesapla**
+    glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), glm::radians(yaw), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    // Kamera pozisyonunu hesapla (uçağın arkasında belirli bir mesafede olacak)
+    glm::vec3 cameraOffset = glm::vec3(0.0f, cameraHeight, cameraDistance);
+    glm::vec3 rotatedOffset = glm::vec3(rotationMatrix * glm::vec4(cameraOffset, 1.0f));
+
+    // Kamera, her zaman uçağın arkasında duracak
+    camera.Position = airplanePosition - rotatedOffset;
+
+    // Kamera, uçağa bakacak şekilde hizalanmalı
+    camera.Front = glm::normalize(airplanePosition - camera.Position);
+    camera.Up = glm::vec3(0.0f, 1.0f, 0.0f);
 }
 
 // glfw: whenever the window size changed (by OS or user resize) this callback function executes
@@ -532,29 +808,108 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
     glViewport(0, 0, width, height);
 }
 
-
 // glfw: whenever the mouse moves, this callback is called
 // -------------------------------------------------------
 void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)
 {
-    float xpos = static_cast<float>(xposIn);
-    float ypos = static_cast<float>(yposIn);
+    static float lastX = SCR_WIDTH / 2.0f;
+    static float lastY = SCR_HEIGHT / 2.0f;
+    static bool firstMouse = true;
 
     if (firstMouse)
     {
-        lastX = xpos;
-        lastY = ypos;
+        lastX = xposIn;
+        lastY = yposIn;
         firstMouse = false;
     }
 
-    float xoffset = xpos - lastX;
-    float yoffset = lastY - ypos; // reversed since y-coordinates go from bottom to top
+    float sensitivity = 0.1f; // Mouse duyarlılığı
+    float xoffset = (xposIn - lastX) * sensitivity;
+    float yoffset = (yposIn - lastY) * sensitivity; // Y ekseni ters çevrildiği için çıkartıyoruz.
 
-    lastX = xpos;
-    lastY = ypos;
+    float zroll = fmod(roll, 360.0f);
+    float zpitch = fmod(pitch + 180.0f, 360.0f) - 180.0f;
+    float zyaw = fmod(yaw, 360.0f);
 
-    camera.ProcessMouseMovement(xoffset, yoffset);
+    float rotationSpeed = fabs(yoffset);
+
+    float pitchcalc = (rotationSpeed * (1.0f - (fabs(zroll) / 90.0f)));
+    float yawcalc = (rotationSpeed * ((zroll) / 90.0f));
+
+    int wscalc;
+    if (yoffset > 0.0f) {
+        wscalc = 1;//w
+    }
+    else if (yoffset < 0.0f) {
+        wscalc = -1;//s
+    }
+    else {
+        wscalc = 0;//none
+    }
+
+    // Uçağın yönlendirilmesi
+    if (wscalc == 1) {
+        if (zroll == 0.0f) {
+            zpitch -= rotationSpeed;
+        } else if (zroll < 90.0f || zroll > 0.0f) {
+            zpitch -= pitchcalc;
+            zyaw -= yawcalc;
+
+
+        } else if (zroll > -90.0f || zroll < 0.0f) {
+            zpitch -= pitchcalc;
+            zyaw -= yawcalc;
+
+
+        } else if (zroll < 180.0f || zroll > 90.0f) {
+            zpitch -= pitchcalc;
+            zyaw -= yawcalc;
+
+
+        } else if (zroll > -180.0f || zroll < -90.0f) {
+            zpitch -= pitchcalc;
+            zyaw -= yawcalc;
+        }} else if (wscalc == -1) {
+        if (zroll == 0.0f) {
+            zpitch += rotationSpeed;
+        } else if (zroll < 90.0f || zroll > 0.0f) {
+            zpitch += pitchcalc;
+            zyaw += yawcalc;
+
+        } else if (zroll > -90.0f || zroll < 0.0f) {
+            zpitch += pitchcalc;
+            zyaw += yawcalc;
+        }
+        else if (zroll < 180.0f || zroll > 90.0f) {
+            zpitch += pitchcalc;
+            zyaw += yawcalc;
+
+
+        } else if (zroll > -180.0f || zroll < -90.0f) {
+            zpitch += pitchcalc;
+            zyaw += yawcalc;
+        }
+
+    }
+
+    
+
+    pitch = zpitch;
+    yaw = zyaw;
+    //roll = zroll;
+
+    lastX = xposIn;
+    lastY = yposIn;
+
+    // Mouse ile uçağın yönünü değiştir
+    roll += xoffset;   // Mouse sağa/sola hareket edince uçak yön değiştirir.
+    //pitch += yoffset; // Mouse yukarı/aşağı hareket edince uçak burnu yukarı/aşağı gider.
+
+    // Pitch açılarını sınırlayarak uçağın ters dönmesini engelleyelim.
+
+
 }
+
 
 
 // glfw: whenever the mouse scroll wheel scrolls, this callback is called
@@ -661,6 +1016,35 @@ void renderSphere()
     glDrawElements(GL_TRIANGLE_STRIP, indexCount, GL_UNSIGNED_INT, 0);
 }
 
+unsigned int quadVAO = 0;
+unsigned int quadVBO;
+void renderQuad(float width)
+{
+    if (quadVAO == 0)
+    {
+        float quadVertices[] = {
+            // positions        // texture Coords
+            -width,  width, 0.0f, 0.0f, width,
+            -width, -width, 0.0f, 0.0f, 0.0f,
+             width,  width, 0.0f, width, width,
+             width, -width, 0.0f, width, 0.0f,
+        };
+        // setup plane VAO
+        glGenVertexArrays(1, &quadVAO);
+        glGenBuffers(1, &quadVBO);
+        glBindVertexArray(quadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    }
+    glBindVertexArray(quadVAO);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+}
+
 // renderCube() renders a 1x1 3D cube in NDC.
 // -------------------------------------------------
 unsigned int cubeVAO = 0;
@@ -736,37 +1120,6 @@ void renderCube()
     glBindVertexArray(0);
 }
 
-// renderQuad() renders a 1x1 XY quad in NDC
-// -----------------------------------------
-unsigned int quadVAO = 0;
-unsigned int quadVBO;
-void renderQuad()
-{
-    if (quadVAO == 0)
-    {
-        float quadVertices[] = {
-            // positions        // texture Coords
-            -1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
-            -1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
-             1.0f,  1.0f, 0.0f, 1.0f, 1.0f,
-             1.0f, -1.0f, 0.0f, 1.0f, 0.0f,
-        };
-        // setup plane VAO
-        glGenVertexArrays(1, &quadVAO);
-        glGenBuffers(1, &quadVBO);
-        glBindVertexArray(quadVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
-    }
-    glBindVertexArray(quadVAO);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-}
-
 // utility function for loading a 2D texture from file
 // ---------------------------------------------------
 unsigned int loadTexturef(char const * path)
@@ -805,3 +1158,6 @@ unsigned int loadTexturef(char const * path)
 
     return textureID;
 }
+
+
+// the end
